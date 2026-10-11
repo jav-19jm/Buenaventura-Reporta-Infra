@@ -1,0 +1,190 @@
+# =============================================================================
+# Buenaventura Reporta: orquestación de los 4 servicios
+#
+#   frontend  React + Nginx. ÚNICO puerto publicado; reenvía /api, /storage y
+#             el WebSocket (/app) al backend
+#   backend   Laravel (PHP-FPM + Nginx) + Reverb (WebSockets) + worker de colas
+#   db        PostgreSQL 17
+#   redis     Redis 7 (caché, colas y eventos de tiempo real)
+#
+# Requiere los repositorios de la app como carpetas hermanas:
+#   ../Buenaventura-Reporta-API   y   ../Buenaventura-Reporta
+# =============================================================================
+name: buenaventura-reporta
+
+# Variables comunes del backend (se reutilizan en el servicio de pruebas)
+x-backend-env: &backend-env
+  APP_NAME: "Buenaventura Reporta"
+  APP_ENV: production
+  APP_DEBUG: "false"
+  APP_KEY: ${APP_KEY:?Falta APP_KEY en .env}
+  APP_URL: ${APP_URL}
+  FRONTEND_URL: ${APP_URL}
+  APP_LOCALE: es
+  APP_FALLBACK_LOCALE: es
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+  DB_CONNECTION: pgsql
+  DB_HOST: db
+  DB_PORT: "5432"
+  DB_DATABASE: ${DB_DATABASE}
+  DB_USERNAME: ${DB_USERNAME}
+  DB_PASSWORD: ${DB_PASSWORD:?Falta DB_PASSWORD en .env}
+
+  REDIS_CLIENT: phpredis
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env}
+  CACHE_STORE: redis
+  QUEUE_CONNECTION: redis
+  SESSION_DRIVER: file
+
+  BROADCAST_CONNECTION: reverb
+  REVERB_APP_ID: ${REVERB_APP_ID:-buenaventura}
+  REVERB_APP_KEY: ${REVERB_APP_KEY:?Falta REVERB_APP_KEY en .env}
+  REVERB_APP_SECRET: ${REVERB_APP_SECRET:?Falta REVERB_APP_SECRET en .env}
+  # Laravel publica los eventos en el Reverb del mismo contenedor
+  REVERB_HOST: 127.0.0.1
+  REVERB_PORT: "8080"
+  REVERB_SCHEME: http
+  REVERB_SERVER_HOST: 0.0.0.0
+  REVERB_SERVER_PORT: "8080"
+
+  JWT_SECRET: ${JWT_SECRET:?Falta JWT_SECRET en .env}
+  JWT_TTL: ${JWT_TTL:-60}
+  JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-20160}
+
+  MAIL_MAILER: ${MAIL_MAILER:-log}
+  MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
+  MAIL_PORT: ${MAIL_PORT:-587}
+  MAIL_USERNAME: ${MAIL_USERNAME:-}
+  MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+  MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-no-reply@buenaventura-reporta.local}
+  MAIL_FROM_NAME: "Buenaventura Reporta"
+
+  # Primer arranque con la base vacía: catálogo + este administrador
+  ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@buenaventura.local}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Falta ADMIN_PASSWORD en .env}
+
+services:
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Falta DB_PASSWORD en .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - interna
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # noeviction: Redis nunca descarta datos por memoria (la cola de trabajos vive aquí)
+    command: >
+      redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}"
+      --maxmemory 100mb --maxmemory-policy noeviction
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - redisdata:/data
+    networks:
+      - interna
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ${API_CONTEXT:-../Buenaventura-Reporta-API}
+      target: prod
+    image: buenaventura/api:${API_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    volumes:
+      # Imágenes subidas (reportes, avatares, noticias, logos)
+      - storage_public:/var/www/html/storage/app/public
+    networks:
+      - publica   # lo alcanza el frontend; salida a Internet para el SMTP
+      - interna   # llega a db y redis
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # El healthcheck (GET /up) está definido en el Dockerfile del backend
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ${FRONTEND_CONTEXT:-../Buenaventura-Reporta}
+      args:
+        VITE_API_URL: /api
+        VITE_REVERB_APP_KEY: ${REVERB_APP_KEY}
+    image: buenaventura/frontend:${FRONTEND_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-80}:80"
+    networks:
+      - publica
+    depends_on:
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+  # ---------------------------------------------------------------------------
+  # Pruebas automatizadas del backend (no arranca con `up`):
+  #   docker compose --profile test run --rm backend-test
+  backend-test:
+    profiles: ["test"]
+    build:
+      context: ${API_CONTEXT:-../Buenaventura-Reporta-API}
+      target: test
+    image: buenaventura/api:test
+    networks:
+      - interna
+
+networks:
+  publica:
+    name: buenaventura_publica
+  interna:
+    name: buenaventura_interna
+    internal: true   # sin salida a Internet: db y redis no son accesibles desde fuera
+
+volumes:
+  pgdata:
+    name: buenaventura_pgdata
+  redisdata:
+    name: buenaventura_redisdata
+  storage_public:
+    name: buenaventura_storage

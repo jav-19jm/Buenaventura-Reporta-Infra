@@ -1,0 +1,5 @@
+# Secretos y respaldos: nunca al repositorio
+.env
+backups/
+*.sql
+*.dump

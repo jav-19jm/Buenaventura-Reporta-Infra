@@ -1,0 +1,19 @@
+# =============================================================================
+# Ajustes SOLO para desarrollo local. Se combina con el archivo principal:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Publica PostgreSQL y la API en 127.0.0.1 (no accesibles desde la red) para
+# usar DBeaver o probar la API directamente, y activa los datos de demostración.
+# =============================================================================
+services:
+  db:
+    ports:
+      - "127.0.0.1:${DB_PORT_LOCAL:-5433}:5432"
+
+  backend:
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      LOG_LEVEL: debug
+    ports:
+      - "127.0.0.1:${API_PORT_LOCAL:-8000}:8000"
