@@ -1,0 +1,28 @@
+# =============================================================================
+# Ajustes de PRODUCCIÓN (servidor con Jenkins y Caddy). Se aplica encima del base:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+#   - Caddy (red externa "edge") recibe el tráfico de Internet en 80/443 y
+#     termina el HTTPS; el frontend ya no publica ningún puerto en el host.
+#   - Las imágenes las construye Jenkins (buenaventura/api y buenaventura/frontend
+#     con la etiqueta latest), así que aquí no se construye nada: el servidor no
+#     necesita el código fuente de la aplicación.
+# =============================================================================
+services:
+  backend:
+    build: !reset null
+
+  frontend:
+    build: !reset null
+    ports: !reset []
+    networks:
+      - publica
+      - edge        # Caddy lo alcanza como http://frontend:80
+
+  backend-test:
+    build: !reset null
+
+networks:
+  edge:
+    external: true  # creada a mano una vez: docker network create edge

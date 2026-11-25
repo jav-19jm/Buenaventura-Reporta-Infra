@@ -252,3 +252,35 @@ docker compose logs -f backend | grep -i reverb
 - **Límites de memoria:** db 256 MB, redis 128 MB, backend 512 MB y frontend 64 MB, pensando en un servidor pequeño.
 - **Redis con `noeviction`.** Nunca descarta datos por falta de memoria, porque la cola de trabajos vive ahí.
 - **Siembra solo en base vacía.** Reiniciar un contenedor no revierte los cambios hechos desde el panel de administración.
+
+---
+
+## 8. Producción y CI/CD (Jenkins)
+
+En el servidor, **Caddy** (HTTPS con Let's Encrypt) recibe el tráfico y lo entrega al `frontend` por la red externa `edge`. **Jenkins** construye las imágenes y despliega con:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+| Archivo | Para qué |
+|---|---|
+| `docker-compose.prod.yml` | Quita el puerto publicado del frontend, lo conecta a `edge` y desactiva los `build` (las imágenes las crea Jenkins) |
+| `scripts/esperar-salud.sh` | Espera a que un servicio quede `healthy`; si no, el pipeline restaura la versión anterior |
+| `Jenkinsfile` | Valida la configuración (6 comprobaciones) y, en `main`, la instala en `/opt/buenaventura` |
+
+Cada repositorio tiene su `Jenkinsfile` con las etapas **Checkout → Build → Test → Docker Build → Delivery**. Todas las ramas pasan por las pruebas; solo `main` despliega.
+
+### En el servidor
+
+```
+/opt/buenaventura/
+├── .env                      # secretos de producción (chmod 600, NUNCA en Git)
+├── docker-compose.yml        # ┐
+├── docker-compose.prod.yml   # ├ los copia el pipeline de este repositorio
+└── scripts/                  # ┘
+```
+
+**Primer despliegue:** crear `.env` → pipeline de infra en `main` → pipeline de la API en `main` (levanta db, redis y backend) → pipeline del frontend en `main`.
+
+En el `.env` de producción: `APP_URL=https://<dominio>`, `LOG_LEVEL=info` y secretos **nuevos** (no los de desarrollo).
